@@ -1,0 +1,531 @@
+---
+title: "Rank Predictor - League of Legends"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Rank in League of Legends
+###Christopher Lee
+###CMSC 320
+
+##Introduction
+
+###What is League of Legends? 
+
+In the multiplayer online battle arena game League of Legends (acronym LoL), players compete in a battleground known as The Summoner’s Rift in teams of 5, where victory is achieved by destroying the enemy team’s nexus - the core of a team’s base. In the same way that, for example, the skills of a basketball player can be analyzed and compared quantitatively, the same can be achieved for players of LoL. To win in the Rift, it requires team coordination, game sense (referred to as “macro”), matchup understanding (referred to as “micro”), and a bit of luck. 
+
+Here's a link from Riot (League's company) to explain more on the basics of the game:
+https://na.leagueoflegends.com/en-us/how-to-play/
+
+###Why League of Legends? 
+
+One thing that makes LoL unique and particularly interesting for data analysis is their ranking system. This ranking system is split into 9 tiers (where the worst players are in a tier called “Iron” and the best in a tier called “Challenger”), each with 4 divisions (e.g., Bronze 4, Bronze 1) where the lower number divisions are the “higher rank”. To advance in tiers and divisions, a player must consistently win games. The current highest rated player - a professional player named Zven - currently sits at a 64% win rate with over 300 games played (211 wins with 117 losses). In contrast, a below average player would see a win rate of around 40%. 
+
+The goal of many players is to sharpen their macro and micro skills with an effect of increasing their game performance, enabling them to ascend in rank. 
+
+Here's an article that goes into detail on how important certain aspects of the game can be for overall improvement:
+https://mobalytics.gg/blog/path-to-improvement-in-league-legends/
+
+###Prerequisite Vocabulary:
+
+Champions: These are the “vessels” in which you play the  game through. With over 140, each champion has a unique set of abilities they can use to fight other champions. 
+Gold: The currency for the game. 
+CS: “creep score”; To make your champion stronger, you need to obtain gold by killing monsters called creeps. 
+Items: Items are what you use your gold on. Items give stat bonuses making your champion stronger, and is an integral part of a successful game. 
+Kills/Deaths/Assists: Another way to earn (or lose) gold is to kill another champion in battle. If, e.g., two players on one team kill an opponent, one player would get an assist, the other a kill, and the player killed would get a death. 
+Wards: Since the Summoner’s Rift is a massive map, it’s advantageous to have vision across all parts of the map. Once a ward is placed somewhere on the map by a player, that player’s team obtains vision in a small radius surrounding the ward for a short period of time. 
+
+Here is some more fun vocabulary if anyone's interested:
+https://mobalytics.gg/blog/league-of-legends-terms/
+
+###Project Motivation:
+
+In the LoL community, there’s a lot of speculation as to what players should focus on to improve their performance and increase their rank. The typical answers here are: increase CS, die less, and place more wards (referred to as “warding”). These are the fundamental goals of a lot of players, and are perfected by the best. But, are these actually the the important aspects of the game players should focus on?
+
+This project investigates the importance of CS, Kills/Deaths/Assists, and Kill Participation (KP).
+
+##Our Process:
+First, we'll scrape information from the website OP.GG, an open-source data & game tracker frequently used by 
+many players, and certainly pivitol for top players. 
+
+Here's their website: 
+https://na.op.gg
+
+Next, we'll tidy up the data, preparing the data for exploratory analysis, hypothesis testing, and finally
+create a predictor model with multiple regression. 
+
+# R Markdown
+
+
+
+First, we'll load in some libraries. 
+```{r lib_setup, eval=TRUE}
+#first lets import some libraries
+library(rvest)
+library(tidyverse)
+library(stringr)
+library(multcompView)
+library(broom)
+```
+
+##Obtaining Data
+
+The objective for this section is to obtain data to operate on.
+In this code, we'll randomly select 150 players for our data. 
+
+First, we want to scrape the total number of users so that our code is
+reproducable. 
+```{r scrape, eval=TRUE}
+#next let's grab the total number of pages
+
+#data url
+total_url <- "https://na.op.gg/ranking/ladder/"
+
+#let's scrape
+total_pages <- total_url %>%
+  read_html() %>%
+  html_node(".ranking-pagination__desc") %>%
+  html_text()
+
+#we have our desired text
+total_pages
+
+#now let's use regex to grab the total number of summoners
+total_summoners <- total_pages %>%
+  str_extract("Total (\\d|,)+") %>%
+  str_remove_all(',') %>%
+  str_split(' ') 
+
+#cast the total number of  summoners to an integer
+total_summoners <- as.integer(total_summoners[[1]][2])
+total_summoners
+
+
+
+```
+
+Since there are 100 users per page, we need to divide the total number of users by 100. 
+We also do some slight adjusting, since, e.g., 1001 users means there's 11 pages, 
+where the 11th page has one user. 
+```{r total_pages, eval=TRUE}
+#since there are 100 players per page, let's use floor division to get the
+#total number of pages
+total_pages <- 0
+
+if (total_summoners %% 10  == 0) {
+  #if  the total number of pages is a multiple of 100, 
+  #float division
+  total_summoners <- total_summoners / 100
+} else{
+  #else we have to account for an "extra" page of players
+  total_pages <- (total_summoners %/% 100) + 1
+}
+
+total_pages
+
+```
+
+Now, let's randomly sample 50 total pages from all pages. 
+From these pages, we'll choose our players.
+```{r random_sample_prep, eval=TRUE}
+#now we want to randomly sample players from 
+#all possible pages from the url below
+pages_url <- "https://na.op.gg/ranking/ladder/page="
+
+#generate 20 random pages to randomly select players from
+#Without replacement
+rand_pages <- sample(1:total_pages, 50)
+rand_pages
+```
+
+Here, we'll scrape 3 usernames of players randomly from our selected pages. 
+```{r random_sample, eval=TRUE}
+#create a list of player usernames 
+usernames <- list()
+i <- 1
+
+for (page in rand_pages) {
+  #add the page number to the pages url
+  temp_url <- str_c(pages_url, page)
+  
+  #scrape the table of players from the current page 
+  table_df <- temp_url %>%
+    read_html() %>%
+    html_node(".LadderRankingLayout") %>%
+    html_node("table") %>%
+    html_table()
+  
+  #generate 3 random numbers to pick 3 usernames
+  n <- sample(1:100, 3)
+  n
+  
+  for (j in n) {
+    #add the username to the list of usernames
+    usernames[[i]] <- table_df[j, 2]
+    i <- i + 1 
+  }
+
+}
+
+#150 randomly sampled usernames
+usernames %>% head(10)
+
+```
+
+Let's create a data frame with our selected attrbutes for our data. 
+```{r create_frame, eval=TRUE}
+#prep the data frame we'll be adding scraped data to
+vect <- unlist(usernames)
+df <- data.frame("Username" = c(vect), "Kills" = 0, "Deaths" = 0, "Assists" = 0, "CSmin" = 0, "CStotal" = 0, "KP" = 0, "rank" = "" )
+df %>%
+  head(10)
+```
+
+To make the next process easier, we create some functions that scrape
+specific data. 
+
+The first function, get_info(), scrapes most of the html page, where
+the nodes of the information we're interested in lie. 
+
+After that, get_kda returns a list with a player's Kills/Deaths/Assists
+from their most recent game. 
+```{r game_data, eval=TRUE}
+
+#get recent game info html 
+get_info <- function(name) {
+  #now that we have our players, let's 
+  #take some stats from their most recent ranked game
+  user <- name
+  user_url <- "https://na.op.gg/summoner/userName="
+
+  temp_user_url <- str_c(user_url, user)
+
+  #grab some general info from the most recently played game
+  temp_user_url %>%
+    read_html() %>%
+    html_node(".GameItemWrap")  %>%
+    html_node(".Content")
+  # returns game_info 
+
+}
+  
+
+get_kda <-  function(game_html) {
+
+  #We want to focus on 2 classes:
+  #KDA, STATS
+  
+  #grab the KDA of the player
+  game_html %>%
+    html_node(".KDA") %>%
+    html_text() %>%
+    str_remove_all("\t") %>%
+    str_remove_all(" ") %>%
+    str_remove_all("/") %>%
+    str_split("\n")
+}
+
+```
+
+For these two functions, we scrape the CS per minute and total CS from a player's 
+most recent game, and then get the kill participation (KP) from the same game. 
+```{r stats, eval=TRUE}
+#grab the stats for a particular player
+get_cs <- function(game_html){
+  stats <- game_info %>%
+    html_node(".Stats") %>%
+    html_text() %>%
+    str_remove_all("\t") %>%
+    str_split("\n") %>%
+    unlist()
+  
+  #now, let'stake the stat info we want with some regex
+  
+  
+  #grab some cs stats
+  cs_stats <- str_remove_all(stats[6], "\\)") %>%
+    str_remove_all("\\(") %>%
+    str_split(" ") %>%
+    unlist
+
+}
+
+get_kp <- function(game_html) {
+  stats <- game_info %>%
+    html_node(".Stats") %>%
+    html_text() %>%
+    str_remove_all("\t") %>%
+    str_split("\n") %>%
+    unlist()
+  #grab the kill participation (KP)
+  str_remove(stats[9], "\\%") %>%
+    str_split(" ") %>%
+    unlist()
+}
+
+```
+
+Finally, we scrape the rank of the player. 
+```{r rank_scrape, eval=TRUE}
+#now lets scrape  their rank
+get_rank <- function(name) {
+  user <- name
+  user_url <- "https://na.op.gg/summoner/userName="
+
+  temp_user_url <- str_c(user_url, user)
+  
+  temp_user_url %>%
+    read_html() %>%
+    html_node(".TierRankInfo") %>%
+    html_node(".TierRank") %>%
+    html_text()
+
+}
+
+```
+
+We have a corner case in which the user has no games listed on their op.gg.
+In this case, we'll just fill out NA for missing data. We return TRUE here 
+if there are no results (no data) to scrape from this player. 
+```{r check_missing, eval=TRUE}
+check_results <- function(name) {
+  user <- name
+  user_url <- "https://na.op.gg/summoner/userName="
+  
+  temp_user_url <- str_c(user_url, user)
+  
+  checker <- temp_user_url %>%
+    read_html() %>%
+    html_text()
+  
+  res <- checker %>%
+    str_extract("There are no results recorded.")
+  
+  if (is.na(res)) {
+    FALSE
+  } else {
+    #TRUE means that there are no results; cant use
+    TRUE
+  }
+}
+```
+
+In this code chunk, we loop through the list of usernames and call
+each of the aformentioned functions to scrape data for a particular
+user. 
+
+One thing to note: Op.GG handles spaces in names for their url with
+"%20". That is, if a username is "Cats Better Than Dogs", we need
+to scrape from the url:
+"https://na.op.gg/summoner/userName=Cats%20Better%20Than%20Dogs".
+
+After data is scraped for each username, we add the data to our
+data frame. 
+```{r, eval=TRUE}
+#here we will call the functions used to scrape stats for all players
+#and then add it to  our data frame. 
+
+i <- 1 #iteration through the data frame when  adding content
+
+user_list <- unlist(usernames)
+
+#let's loop through our usernames and call get_info
+for (player_username in user_list) {
+  #op gg handles spaces in urls with '%20'
+  player_username <- str_replace_all(player_username, " ", "%20")
+
+  #check if there is data to scrape
+  if (check_results(player_username) == TRUE) {
+    #if there's nothing to scrape, use NA
+    df[i,] = NA
+  } else {  
+    
+    game_info <- get_info(player_username)  #scrape the most recent game information
+    kda <- get_kda(game_info) #grab the kda of the player
+    #skip the first two entries; use  entries 3-5
+    kills <- kda[[1]][3]
+    deaths <- kda[[1]][4]
+    assists <- kda[[1]][5]
+    
+    cs_stats <- get_cs(game_info)
+    CStotal <- cs_stats[1]
+    CSmin <- cs_stats[2]
+    
+    kp <- get_kp(game_info)
+    kp <- kp[2]
+    
+    rank <- get_rank(player_username)
+    
+    #now that we have all our data for a player, add to our frarme
+    df[i, 2] <- kills 
+    df[i, 3] <- deaths
+    df[i, 4] <- assists
+    df[i, 5] <- CSmin
+    df[i, 6] <- CStotal
+    df[i, 7] <- kp
+    df[i, 8] <- rank
+  }
+  #increment df index
+  i <- i + 1
+}
+
+#after a few minutes, we should have our frame
+df %>%
+  head(10)
+```
+
+##Tidying Our Data
+
+Now that we've successfully scraped all our data, it's time to do some tidying before
+we do some processing. 
+
+We start by adding back the list of usernames into the Username attribute column from 
+our dataframe. From there, we seperate the tier and the division, since we're only
+interested in the tier-differences. Finally, we change some data types and factorize
+the tiers. 
+```{r tidy_data, eval=TRUE}
+#let's put the user names back in, and we have our data frame
+df[1] <- user_list
+
+#now we have to tidy up rank
+#we wont focus on divisions; we'll stick to tiers. 
+
+#get rid of the number in rank
+temp_df <- df %>%
+  mutate(temp_tier=str_split(df$rank, " "), tier="") 
+
+i <- 1
+for (arr in temp_df$temp_tier) {
+  temp_df[i, 10] <- arr[1]
+  i <- i + 1
+}
+
+# change the datatypes of the numeric attributes
+# and select the attributes you want to keep
+almost_tidy_df <- temp_df %>%
+  mutate(Kills=as.integer(Kills), Deaths=as.integer(Deaths), Assists=as.integer(Assists),
+         CSmin=as.double(CSmin), CStotal=as.integer(CStotal), KP=as.integer(KP)) %>%
+  select(-rank)
+
+#last thing we want to do is to quantify tiers; that is,
+#we need to express that, e.g., Gold is a higher tier than Silver.
+
+tidy_data <- almost_tidy_df %>%
+  mutate(factor_tier=as.factor(tier))
+
+```
+
+##Exploratory Data Analysis
+
+```{r eda_1, eval=TRUE}
+#let's looks at a scatter plot of K/D and CSmin
+tidy_data %>%
+  ggplot(mapping = aes(x=factor_tier, y=CSmin)) +
+  geom_boxplot() + 
+  labs(title="Distributions of CS per minute For Different Ranks",
+      x="Tier",
+      y="CS per minute")
+  
+```
+
+```{r eda_2, eval=TRUE}
+#let's looks at a scatter plot of K/D and CSmin
+tidy_data %>%
+  ggplot(mapping = aes(x=factor_tier, y=((Kills+Assists)))) +
+  geom_boxplot() + 
+  labs(title="Distributions of Kills + Assists in a Game For Different Ranks",
+      x="Tier",
+      y="Kills and Assists")
+  
+```
+
+```{r eda_3, eval=TRUE}
+#let's looks at a scatter plot of K/D and CSmin
+tidy_data %>%
+  ggplot(mapping = aes(x=factor_tier, y=(Deaths))) +
+  geom_boxplot() + 
+  labs(title="Distributions of Deaths in a Game For Different Ranks",
+      x="Tier",
+      y="Deaths")
+  
+```
+
+```{r eda_4, eval=TRUE}
+#let's looks at a scatter plot of K/D and CSmin
+tidy_data %>%
+  ggplot(mapping = aes(x=factor_tier, y=(KP))) +
+  geom_boxplot() + 
+  labs(title="Distributions of Kill Participation in a Game For Different Ranks",
+      x="Tier",
+      y="Kill Participation (Percent)")
+  
+```
+
+
+```{r hypt_test, eval=TRUE}
+#it looks like csmin, kills+assists, kp could all explain rank.
+#let's test the significane of them
+
+#what we want to do now is find averages of all the above
+#attributes for each rank and test if there's a 
+#statistically significant difference. 
+
+
+#let's use ANOVA to perform a multi-comparison test
+#and follow up with the Tukey Method.
+
+#let's focus on a few contiguous tiers
+anova_data <- tidy_data %>%
+  filter(tier=="Gold" | tier=="Silver" | tier=="Bronze")
+anova_data %>%
+  head(10)
+
+model <- lm(anova_data$CSmin ~ anova_data$tier)
+ANOVA = aov(model)
+
+TUKEY <- TukeyHSD(x=ANOVA, 'anova_data$tier', conf.level=0.95)
+
+plot(TUKEY , las=1 , col="brown")
+
+
+model <- lm(anova_data$Deaths ~ anova_data$tier)
+ANOVA = aov(model)
+
+TUKEY <- TukeyHSD(x=ANOVA, 'anova_data$tier', conf.level=0.95)
+
+plot(TUKEY , las=1 , col="brown")
+
+
+model <- lm(anova_data$KP ~ anova_data$tier)
+ANOVA = aov(model)
+
+TUKEY <- TukeyHSD(x=ANOVA, 'anova_data$tier', conf.level=0.95)
+
+plot(TUKEY , las=1 , col="brown")
+```
+
+
+
+
+
+```{r multi_regress, eval=TRUE}
+rank_fit <- lm(KP~CSmin*Deaths*Kills*Assists*tier, data=anova_data)
+rank_fit_stats <- rank_fit %>%
+  tidy()
+rank_fit_stats %>% knitr::kable()
+
+rank_fit %>%
+  augment() %>%
+  ggplot(aes(x=.fitted, y=.resid, color=tier)) + 
+  geom_point()
+```
+
+
+
+
+
